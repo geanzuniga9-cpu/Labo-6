@@ -1,0 +1,233 @@
+using UnityEngine;
+using UnityEngine.InputSystem;
+using MoreMountains.Feedbacks;
+
+public class PlayerController : MonoBehaviour
+{
+    [Header("Elegir Player o Player2")]
+    public string mapa = "Player";
+
+    [Header("Movimiento")]
+    public float velocidad = 5f;
+
+    private Rigidbody2D rb;
+    private Vector2 movimiento;
+    private Vector2 direccion = Vector2.right;
+
+    [Header("Dash")]
+    public float cargaMaxima = 2f;
+    public float duracionDash = 0.3f;
+    public float fuerzaMinima = 5f;
+    public float fuerzaMaxima = 15f;
+
+    private bool cargando;
+    private bool haciendoDash;
+    private float tiempoCarga;
+    private float tiempoDash;
+    private float fuerzaDash;
+    private Vector2 direccionDash;
+
+    [Header("Curvas: configurar en el Inspector")]
+    public AnimationCurve curvaVelocidad;
+    public AnimationCurve curvaCarga;
+
+    [Header("Feedbacks")]
+    public MMFeedbacks feedbackCarga;
+    public MMFeedbacks feedbackDash;
+    public MMFeedbacks feedbackImpacto;
+
+    [Header("Empuje")]
+    public float duracionEmpuje = 0.2f;
+
+    private Vector2 empuje;
+    private float tiempoEmpuje;
+    private bool golpeo;
+
+    private Controles controles;
+    private InputActionMap mapaActivo;
+    private InputAction move;
+    private InputAction dash;
+
+    void Awake()
+    {
+        rb = GetComponent<Rigidbody2D>();
+
+        controles = new Controles();
+
+        mapaActivo = controles.asset.FindActionMap(mapa, true);
+
+        move = mapaActivo.FindAction("Move", true);
+        dash = mapaActivo.FindAction("Dash", true);
+    }
+
+    void OnEnable()
+    {
+        move.performed += Mover;
+        move.canceled += Detener;
+
+        dash.started += CargarDash;
+        dash.canceled += LanzarDash;
+
+        mapaActivo.Enable();
+    }
+
+    void OnDisable()
+    {
+        move.performed -= Mover;
+        move.canceled -= Detener;
+
+        dash.started -= CargarDash;
+        dash.canceled -= LanzarDash;
+
+        mapaActivo.Disable();
+
+        movimiento = Vector2.zero;
+        cargando = false;
+        haciendoDash = false;
+        tiempoCarga = 0f;
+        tiempoEmpuje = 0f;
+
+        if (feedbackCarga != null)
+            feedbackCarga.StopFeedbacks();
+
+        rb.velocity = Vector2.zero;
+    }
+
+    void OnDestroy()
+    {
+        if (controles != null)
+            controles.Dispose();
+    }
+
+    void Mover(InputAction.CallbackContext contexto)
+    {
+        movimiento = contexto.ReadValue<Vector2>();
+
+        if (movimiento != Vector2.zero)
+            direccion = movimiento.normalized;
+    }
+
+    void Detener(InputAction.CallbackContext contexto)
+    {
+        movimiento = Vector2.zero;
+    }
+
+    void CargarDash(InputAction.CallbackContext contexto)
+    {
+        if (haciendoDash || tiempoEmpuje > 0f)
+            return;
+
+        cargando = true;
+        tiempoCarga = 0f;
+
+        if (feedbackCarga != null)
+            feedbackCarga.PlayFeedbacks();
+    }
+
+    void LanzarDash(InputAction.CallbackContext contexto)
+    {
+        if (!cargando)
+            return;
+
+        cargando = false;
+
+        if (feedbackCarga != null)
+            feedbackCarga.StopFeedbacks();
+
+        float carga = Mathf.Clamp01(tiempoCarga / cargaMaxima);
+
+        float valor = Mathf.Clamp01(curvaCarga.Evaluate(carga));
+
+        fuerzaDash = Mathf.Lerp(fuerzaMinima, fuerzaMaxima, valor);
+
+        direccionDash = direccion;
+        tiempoDash = 0f;
+        golpeo = false;
+        haciendoDash = true;
+
+        if (feedbackDash != null)
+            feedbackDash.PlayFeedbacks();
+    }
+
+    void Update()
+    {
+        if (cargando)
+        {
+            tiempoCarga += Time.deltaTime;
+            tiempoCarga = Mathf.Min(tiempoCarga, cargaMaxima);
+        }
+    }
+
+    void FixedUpdate()
+    {
+        if (tiempoEmpuje > 0f)
+        {
+            rb.velocity = empuje;
+            tiempoEmpuje -= Time.fixedDeltaTime;
+        }
+        else if (haciendoDash)
+        {
+            float progreso = Mathf.Clamp01(tiempoDash / duracionDash);
+            float valor = Mathf.Max(0f, curvaVelocidad.Evaluate(progreso));
+
+            rb.velocity = direccionDash * fuerzaDash * valor;
+
+            tiempoDash += Time.fixedDeltaTime;
+
+            if (tiempoDash >= duracionDash)
+                haciendoDash = false;
+        }
+        else
+        {
+            rb.velocity = Vector2.ClampMagnitude(movimiento, 1f)
+                * velocidad;
+        }
+    }
+
+    void OnCollisionEnter2D(Collision2D colision)
+    {
+        GolpearRival(colision);
+    }
+
+    void OnCollisionStay2D(Collision2D colision)
+    {
+        GolpearRival(colision);
+    }
+
+    void GolpearRival(Collision2D colision)
+    {
+        if (!haciendoDash || golpeo)
+            return;
+
+        PlayerController rival =
+            colision.gameObject.GetComponent<PlayerController>();
+
+        if (rival == null || rival == this)
+            return;
+
+        Vector2 haciaRival = rival.rb.position - rb.position;
+
+        if (Vector2.Dot(direccionDash, haciaRival) <= 0f)
+            return;
+
+        golpeo = true;
+
+        rival.RecibirEmpuje(direccionDash * fuerzaDash);
+
+        if (feedbackImpacto != null)
+            feedbackImpacto.PlayFeedbacks();
+    }
+
+    public void RecibirEmpuje(Vector2 fuerza)
+    {
+        cargando = false;
+        haciendoDash = false;
+        tiempoCarga = 0f;
+
+        if (feedbackCarga != null)
+            feedbackCarga.StopFeedbacks();
+
+        empuje = fuerza;
+        tiempoEmpuje = duracionEmpuje;
+    }
+}
